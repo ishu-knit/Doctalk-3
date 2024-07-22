@@ -1,5 +1,11 @@
+
+# write clear code 
+
+
+
 import streamlit as st
 from PyPDF2 import PdfReader
+from langchain.memory import ConversationBufferMemory
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS    
 from langchain_community.embeddings import OllamaEmbeddings
@@ -20,114 +26,113 @@ lottie_animation = load_lottieurl("https://lottie.host/c37665ee-a522-477c-8b38-a
 lottie_download = load_lottieurl("https://assets4.lottiefiles.com/private_files/lf30_t26law.json")
 lottie_loader = load_lottieurl("https://lottie.host/3654e8d9-2cd8-4c88-a7c1-ae91890edd68/WVIi8BhZtr.json")
 
-
-
-
-# loading css 
+# Load CSS
 with open(".streamlit/styles.css") as f:
-    st.markdown(f'<style>{f.read()}</style>' , unsafe_allow_html=True)
+    st.markdown(f'<style>{f.read()}</style>', unsafe_allow_html=True)
 
-
+# Main application
 def main():
     st.title("Doctalk-3")
     st_lottie(lottie_animation, key="hello", height=100)
-
-    # File upload widget
+    
     doc_reader = st.file_uploader("Upload a PDF file", type=["pdf"])
 
     if doc_reader and "vectorstore" not in st.session_state:
-        with st.spinner("Processing PDF..."):
-            # Text extraction
-            raw_text = ''
-            for i, page in enumerate(PdfReader(doc_reader).pages):
-                text = page.extract_text()
-                if text:
-                    raw_text += text
-
-            # Text splitting
-            text_splitter = RecursiveCharacterTextSplitter(
-                separators=[
-                    "\n\n",
-                    "\n",
-                    " ",
-                    ".",
-                    ",",
-                    "\u200b",  # Zero-width space
-                    "\uff0c",  # Fullwidth comma
-                    "\u3001",  # Ideographic comma
-                    "\uff0e",  # Fullwidth full stop
-                    "\u3002",  # Ideographic full stop
-                    "",
-                ],
-                chunk_size=500,
-                chunk_overlap=10,
-                length_function=len,
-            )
-            texts = text_splitter.split_text(raw_text)
-
-            #: Create embeddings and store in database
-            try:
-                ollama_embeddings = OllamaEmbeddings(model="nomic-embed-text", base_url='http://127.0.0.1:11434')
-                model = Ollama(model="llama3", base_url='http://127.0.0.1:11434')
-
-
-                vectorstore = FAISS.from_texts(texts, ollama_embeddings)
-                st.session_state.vectorstore = vectorstore
-                st.session_state.ollama_embeddings = ollama_embeddings
-                st.session_state.model = model
-                st.success("Text processed and embeddings created!")
-
-            except Exception as e:
-                st.warning(f"Failed to initialize ollama embeddings: {str(e)}")
-                st.stop()
+        process_pdf(doc_reader)
 
     if "vectorstore" in st.session_state:
-        # retrieval F(x)
-        if "retrieval_chain" not in st.session_state:
+        setup_retrieval_chain()
+        handle_query()
 
-            try:
-                
-                template = """
+def process_pdf(doc_reader):
+    with st.spinner("Processing PDF..."):
+        raw_text = extract_text_from_pdf(doc_reader)
+        texts = split_text(raw_text)
+
+        try:
+            create_embeddings(texts)
+            st.success("Text processed and embeddings created!")
+        except Exception as e:
+            st.warning(f"Failed to initialize Ollama embeddings: {str(e)}")
+            st.stop()
+
+def extract_text_from_pdf(doc_reader):
+    raw_text = ''
+    for i, page in enumerate(PdfReader(doc_reader).pages):
+        text = page.extract_text()
+        if text:
+            raw_text += text
+    return raw_text
+
+def split_text(raw_text):
+    text_splitter = RecursiveCharacterTextSplitter(
+        separators=[
+            "\n\n", "\n", " ", ".", ",", "\u200b", "\uff0c", "\u3001", "\uff0e", "\u3002", ""
+        ],
+        chunk_size=500,
+        chunk_overlap=10,
+        length_function=len,
+    )
+    return text_splitter.split_text(raw_text)
+
+def create_embeddings(texts):
+    ollama_embeddings = OllamaEmbeddings(model="nomic-embed-text", base_url='http://127.0.0.1:11434')
+    model = Ollama(model="llama3", base_url='http://127.0.0.1:11434')
+    vectorstore = FAISS.from_texts(texts, ollama_embeddings)
+    # vectorstore = FAISS.load_local("doctalk_database", ollama_embeddings)
+    st.session_state.vectorstore = vectorstore
+    st.session_state.ollama_embeddings = ollama_embeddings
+    st.session_state.model = model
+
+def setup_retrieval_chain():
+    if "retrieval_chain" not in st.session_state:
+        try:
+            prompt = PromptTemplate(
+                input_variables=["context", "history" ,"question"],
+                template="""
                 Use the following context and 
                 ------
                 <context>{context}</context>
                 ------
+                <history>{history}</history>
                 ------
                     {question}
-                Answer: and also give the answer from the pdfs not from other sources
+                Answer:  give the answer according to pdf only and donot include extra information from outside pdf but give detail 
+                ans and also include points if possible
+
                 """
+            )
 
+            Retrieval_fx = st.session_state.vectorstore.as_retriever()
+            chain = RetrievalQA.from_chain_type(
+                st.session_state.model,
+                retriever=Retrieval_fx,
+                chain_type_kwargs={
+                    "prompt": prompt, 
+                    "memory": ConversationBufferMemory(
+                                memory_key="history",
+                                input_key="question"),
+                                    }
+            )
 
+            st.session_state.retrieval_chain = chain
+            st.success("Retrieval chain created!")
+        except Exception as e:
+            st.warning(f"Failed to load question answering chain: {str(e)}")
+            st.stop()
 
-                prompt = PromptTemplate(
-                    input_variables=[ "context", "question"],
-                    template=template,
-                )
-
-                Retrieval_fx = st.session_state.vectorstore.as_retriever()
-                chain = RetrievalQA.from_chain_type(
-                    st.session_state.model,
-                    retriever=Retrieval_fx,
-                    chain_type_kwargs={"prompt": prompt}
-                )
-                st.session_state.retrieval_chain = chain
-                st.success("Retrieval chain created!")
+def handle_query():
+    query = st.text_input('Type your query here...', key="query_input")
+    if st.button('Submit'):
+        if query:
+            try:
+                with st_lottie_spinner(lottie_loader, key="download", height=100):
+                    answer = st.session_state.retrieval_chain.invoke({"query": query})
+                    
+                    st.markdown(answer["result"])
+                st.success("Query processed")
             except Exception as e:
-                st.warning(f"Failed to load question answering chain: {str(e)}")
-                st.stop()
+                st.warning(f"Failed to perform search and question answering: {str(e)}")
 
-        # User query input and processing
-        query = st.text_input('Type your query here...', key="query_input")
-        if st.button('Submit'):
-            if query:
-                try:
-                    with st_lottie_spinner(lottie_loader, key="download", height=100):
-                        
-                        answer = st.session_state.retrieval_chain.invoke({"query": query})
-                        st.markdown(answer["result"])
-                    st.success("Query processed")
-
-                except Exception as e:
-                    st.warning(f"Failed to perform search and question answering: {str(e)}")
-
-main()
+if __name__ == "__main__":
+    main()
